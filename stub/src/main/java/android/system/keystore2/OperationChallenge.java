@@ -5,20 +5,17 @@ import android.os.Parcelable;
 
 import androidx.annotation.NonNull;
 
-public class CreateOperationResponse implements Parcelable {
-    public IKeystoreOperation iOperation;
-    public OperationChallenge operationChallenge;
-    public KeyParameters parameters;
-    public byte[] upgradedBlob;
+public class OperationChallenge implements Parcelable {
+    public long challenge = 0;
 
-    public static final Creator<CreateOperationResponse> CREATOR = new Creator<CreateOperationResponse>() {
+    public static final Creator<OperationChallenge> CREATOR = new Creator<OperationChallenge>() {
         @Override
-        public CreateOperationResponse createFromParcel(Parcel in) {
+        public OperationChallenge createFromParcel(Parcel in) {
             throw new RuntimeException();
         }
 
         @Override
-        public CreateOperationResponse[] newArray(int size) {
+        public OperationChallenge[] newArray(int size) {
             throw new RuntimeException();
         }
     };
@@ -33,3 +30,4 @@ public class CreateOperationResponse implements Parcelable {
         throw new RuntimeException();
     }
 }
+

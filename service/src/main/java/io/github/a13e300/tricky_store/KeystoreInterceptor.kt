@@ -38,7 +38,8 @@ object KeystoreInterceptor : BinderInterceptor() {
                 data.enforceInterface(IKeystoreService.DESCRIPTOR)
                 val descriptor =
                     data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
-                val proxyAlias = SecurityLevelInterceptor.getProxyAlias(callingUid, descriptor.alias)
+                val alias = descriptor.alias ?: return@runCatching
+                val proxyAlias = SecurityLevelInterceptor.getProxyAlias(callingUid, alias)
                 if (proxyAlias != null) {
                     // Delete on remote proxy
                     kotlin.runCatching {
@@ -47,8 +48,8 @@ object KeystoreInterceptor : BinderInterceptor() {
                         Logger.e("proxy delete failed for $proxyAlias", it)
                     }
                     // Clean local cache
-                    SecurityLevelInterceptor.removeProxyKey(callingUid, descriptor.alias)
-                    Logger.i("proxy deleteKey for uid=$callingUid alias=${descriptor.alias} proxyAlias=$proxyAlias")
+                    SecurityLevelInterceptor.removeProxyKey(callingUid, alias)
+                    Logger.i("proxy deleteKey for uid=$callingUid alias=$alias proxyAlias=$proxyAlias")
                     val p = Parcel.obtain()
                     p.writeNoException()
                     return OverrideReply(0, p)
@@ -63,10 +64,11 @@ object KeystoreInterceptor : BinderInterceptor() {
                     data.enforceInterface(IKeystoreService.DESCRIPTOR)
                     val descriptor =
                         data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
+                    val alias = descriptor.alias ?: return@runCatching
                     val response =
-                        SecurityLevelInterceptor.getProxyKeyResponse(callingUid, descriptor.alias)
+                        SecurityLevelInterceptor.getProxyKeyResponse(callingUid, alias)
                         ?: return@runCatching
-                    Logger.i("proxy getKeyEntry for uid=$callingUid alias=${descriptor.alias}")
+                    Logger.i("proxy getKeyEntry for uid=$callingUid alias=$alias")
                     val p = Parcel.obtain()
                     p.writeNoException()
                     p.writeTypedObject(response, 0)

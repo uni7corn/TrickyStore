@@ -113,6 +113,22 @@ object Config {
         ps?.any { it in proxyPackages }
     }.onFailure { Logger.e("failed to get packages", it) }.getOrNull() ?: false
 
+    fun packagesForUid(callingUid: Int): Array<String> = kotlin.runCatching {
+        getPm()?.getPackagesForUid(callingUid) ?: emptyArray()
+    }.onFailure { Logger.e("failed to get packages for uid=$callingUid", it) }
+        .getOrDefault(emptyArray())
+
+    fun matchesAnyTarget(callingUid: Int): Boolean =
+        packagesForUid(callingUid).any { it in proxyPackages }
+
+    fun describeTargets(callingUid: Int): String {
+        val packages = packagesForUid(callingUid)
+        val packageText = packages.joinToString(prefix = "[", postfix = "]")
+        val proxyConfigured = ProxyClient.baseUrl != null
+        val proxy = proxyConfigured && packages.any { it in proxyPackages }
+        return "packages=$packageText proxy=$proxy proxyConfigured=$proxyConfigured"
+    }
+
     fun getProxyPackageName(callingUid: Int): String? = kotlin.runCatching {
         val ps = getPm()?.getPackagesForUid(callingUid) ?: return null
         ps.firstOrNull { it in proxyPackages }

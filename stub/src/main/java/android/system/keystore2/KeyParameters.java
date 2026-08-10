@@ -1,24 +1,22 @@
 package android.system.keystore2;
 
+import android.hardware.security.keymint.KeyParameter;
 import android.os.Parcel;
 import android.os.Parcelable;
 
 import androidx.annotation.NonNull;
 
-public class CreateOperationResponse implements Parcelable {
-    public IKeystoreOperation iOperation;
-    public OperationChallenge operationChallenge;
-    public KeyParameters parameters;
-    public byte[] upgradedBlob;
+public class KeyParameters implements Parcelable {
+    public KeyParameter[] keyParameter;
 
-    public static final Creator<CreateOperationResponse> CREATOR = new Creator<CreateOperationResponse>() {
+    public static final Creator<KeyParameters> CREATOR = new Creator<KeyParameters>() {
         @Override
-        public CreateOperationResponse createFromParcel(Parcel in) {
+        public KeyParameters createFromParcel(Parcel in) {
             throw new RuntimeException();
         }
 
         @Override
-        public CreateOperationResponse[] newArray(int size) {
+        public KeyParameters[] newArray(int size) {
             throw new RuntimeException();
         }
     };
@@ -33,3 +31,4 @@ public class CreateOperationResponse implements Parcelable {
         throw new RuntimeException();
     }
 }
+

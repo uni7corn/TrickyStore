@@ -14,7 +14,9 @@ import android.system.keystore2.KeyMetadata
 import io.github.a13e300.tricky_store.binder.BinderInterceptor
 import io.github.a13e300.tricky_store.proxy.ProxyClient
 import io.github.a13e300.tricky_store.proxy.ProxyOperationBinder
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 class SecurityLevelInterceptor(
     private val original: IKeystoreSecurityLevel,
@@ -26,6 +28,7 @@ class SecurityLevelInterceptor(
         private val createOperationTransaction by lazy {
             getTransactCode(IKeystoreSecurityLevel.Stub::class.java, "createOperation")
         }
+        private const val DOMAIN_KEY_ID = 4
         // Maps local key alias → proxy alias for proxy-generated keys.
         // In-memory only (per keystore2 process lifetime): NOT persisted to disk, so the
         // mapping is dropped on daemon/device restart. Nothing is reused across sessions —
@@ -33,6 +36,9 @@ class SecurityLevelInterceptor(
         // in-session key lifecycle (getKeyEntry read-back, createOperation, deleteKey, and
         // an app-supplied attestKeyAlias generated earlier in the same session).
         private val proxyAliases = ConcurrentHashMap<Key, ProxyKeyInfo>()
+        private val proxyKeyIds = ConcurrentHashMap<KeyId, ProxyKeyInfo>()
+        private val nextProxyKeyId = AtomicLong(System.currentTimeMillis() shl 16)
+        private val loggedTransactions = ConcurrentHashMap.newKeySet<String>()
 
         // Tags a remote device cannot satisfy on behalf of this device:
         //  - ATTESTATION_ID_*: a device can only attest its OWN IDs → CANNOT_ATTEST_IDS.
@@ -48,15 +54,31 @@ class SecurityLevelInterceptor(
         fun getProxyKeyResponse(uid: Int, alias: String): KeyEntryResponse? =
             proxyAliases[Key(uid, alias)]?.response
 
-        fun removeProxyKey(uid: Int, alias: String): Boolean =
-            proxyAliases.remove(Key(uid, alias)) != null
+        fun removeProxyKey(uid: Int, alias: String): Boolean {
+            val removed = proxyAliases.remove(Key(uid, alias)) ?: return false
+            proxyKeyIds.remove(KeyId(uid, removed.keyId))
+            return true
+        }
 
         fun getProxyAlias(uid: Int, alias: String): String? =
             proxyAliases[Key(uid, alias)]?.proxyAlias
     }
 
     data class Key(val uid: Int, val alias: String)
-    data class ProxyKeyInfo(val proxyAlias: String, val response: KeyEntryResponse)
+    data class KeyId(val uid: Int, val keyId: Long)
+    data class ProxyKeyInfo(
+        val localAlias: String,
+        val proxyAlias: String,
+        val keyId: Long,
+        val response: KeyEntryResponse
+    )
+
+    init {
+        Logger.i(
+            "security level interceptor level=$level generateKeyCode=$generateKeyTransaction " +
+                "createOperationCode=$createOperationTransaction"
+        )
+    }
 
     override fun onPreTransact(
         target: IBinder,
@@ -66,6 +88,16 @@ class SecurityLevelInterceptor(
         callingPid: Int,
         data: Parcel
     ): Result {
+        if (code == generateKeyTransaction || Config.matchesAnyTarget(callingUid)) {
+            val logKey = "$level:$callingUid:$code"
+            if (loggedTransactions.add(logKey)) {
+                Logger.i(
+                    "securityLevel transact level=$level code=$code flags=$flags uid=$callingUid " +
+                        "pid=$callingPid dataSz=${data.dataSize()} ${Config.describeTargets(callingUid)} " +
+                        "generateKeyCode=$generateKeyTransaction createOperationCode=$createOperationTransaction"
+                )
+            }
+        }
         if (code == generateKeyTransaction) {
             if (Config.needProxy(callingUid)) {
                 return handleProxyGenerateKey(callingUid, callingPid, data)
@@ -78,11 +110,19 @@ class SecurityLevelInterceptor(
     }
 
     private fun handleProxyGenerateKey(callingUid: Int, callingPid: Int, data: Parcel): Result {
-        Logger.i("intercept proxy key gen uid=$callingUid pid=$callingPid")
+        Logger.i("intercept proxy key gen uid=$callingUid pid=$callingPid ${Config.describeTargets(callingUid)}")
         kotlin.runCatching {
             data.enforceInterface(IKeystoreSecurityLevel.DESCRIPTOR)
             val keyDescriptor =
                 data.readTypedObject(KeyDescriptor.CREATOR) ?: return@runCatching
+            val localAlias = keyDescriptor.alias
+            if (localAlias.isNullOrBlank()) {
+                Logger.i(
+                    "proxy generateKey skip: empty alias uid=$callingUid " +
+                        describeDescriptor(keyDescriptor)
+                )
+                return@runCatching
+            }
             val attestationKeyDescriptor = data.readTypedObject(KeyDescriptor.CREATOR)
             val params = data.createTypedArray(KeyParameter.CREATOR)!!
             val aFlags = data.readInt()
@@ -96,11 +136,37 @@ class SecurityLevelInterceptor(
                     break
                 }
             }
-            if (challenge == null) return@runCatching // Not an attestation request
+            Logger.i(
+                "proxy generateKey parsed uid=$callingUid alias=$localAlias " +
+                    "params=${params.size} hasChallenge=${challenge != null} " +
+                    describeDescriptor(keyDescriptor)
+            )
+            if (challenge == null) {
+                Logger.i("proxy generateKey skip: no attestation challenge uid=$callingUid alias=$localAlias")
+                return@runCatching // Not an attestation request
+            }
+            if (challenge.size > 128) {
+                Logger.i(
+                    "proxy generateKey skip: oversized attestation challenge " +
+                        "uid=$callingUid alias=$localAlias len=${challenge.size}"
+                )
+                return@runCatching
+            }
 
             // Get target package info
-            val packageName = Config.getProxyPackageName(callingUid) ?: return@runCatching
-            val pm = Config.getPm() ?: return@runCatching
+            val packageName = Config.getProxyPackageName(callingUid)
+            if (packageName == null) {
+                Logger.i(
+                    "proxy generateKey skip: no proxy target package for uid=$callingUid " +
+                        Config.describeTargets(callingUid)
+                )
+                return@runCatching
+            }
+            val pm = Config.getPm()
+            if (pm == null) {
+                Logger.i("proxy generateKey skip: package manager unavailable uid=$callingUid")
+                return@runCatching
+            }
             @Suppress("DEPRECATION")
             val pkgInfo = pm.getPackageInfoCompat(
                 packageName, android.content.pm.PackageManager.GET_SIGNATURES.toLong(),
@@ -209,9 +275,12 @@ class SecurityLevelInterceptor(
             metadata.keySecurityLevel = level
             metadata.certificate = result.leafCert
             metadata.certificateChain = effectiveChain
+            val proxyKeyId = nextProxyKeyId.getAndIncrement()
             val d = KeyDescriptor()
-            d.domain = keyDescriptor.domain
-            d.nspace = keyDescriptor.nspace
+            d.domain = DOMAIN_KEY_ID
+            d.nspace = proxyKeyId
+            d.alias = null
+            d.blob = null
             metadata.key = d
             metadata.authorizations = buildAuthorizationsFromParams(params)
 
@@ -219,8 +288,13 @@ class SecurityLevelInterceptor(
             response.metadata = metadata
             response.iSecurityLevel = original
 
-            proxyAliases[Key(callingUid, keyDescriptor.alias)] =
-                ProxyKeyInfo(result.alias, response)
+            val proxyInfo = ProxyKeyInfo(localAlias, result.alias, proxyKeyId, response)
+            proxyAliases[Key(callingUid, localAlias)] = proxyInfo
+            proxyKeyIds[KeyId(callingUid, proxyKeyId)] = proxyInfo
+            Logger.i(
+                "proxy key mapped uid=$callingUid alias=$localAlias " +
+                    "keyId=$proxyKeyId proxyAlias=${result.alias}"
+            )
 
             val p = Parcel.obtain()
             p.writeNoException()
@@ -250,12 +324,29 @@ class SecurityLevelInterceptor(
             val params = data.createTypedArray(KeyParameter.CREATOR)!!
             // val forced = data.readInt() != 0
 
-            val alias = keyDescriptor.alias ?: return@runCatching
-            val key = Key(callingUid, alias)
+            val alias = keyDescriptor.alias
+            val proxyInfo = if (!alias.isNullOrBlank()) {
+                proxyAliases[Key(callingUid, alias)]
+            } else if (keyDescriptor.domain == DOMAIN_KEY_ID) {
+                proxyKeyIds[KeyId(callingUid, keyDescriptor.nspace)]
+            } else {
+                null
+            }
+            if (proxyInfo == null) {
+                if (Config.needProxy(callingUid)) {
+                    Logger.i(
+                        "proxy createOperation skip: no proxy key uid=$callingUid " +
+                            describeDescriptor(keyDescriptor)
+                    )
+                }
+                return@runCatching
+            }
 
-            val proxyInfo = proxyAliases[key] ?: return@runCatching
-
-            Logger.i("intercept createOperation for proxy key uid=$callingUid alias=$alias")
+            Logger.i(
+                "intercept createOperation for proxy key uid=$callingUid " +
+                    "alias=${proxyInfo.localAlias} keyId=${proxyInfo.keyId} " +
+                    describeDescriptor(keyDescriptor)
+            )
 
             val paramEntries = params.mapNotNull { keyParamToEntry(it) }
             // 与 generate 不同：createOperation 操作的是一把已出证的既有代理密钥，无法就地重建
@@ -267,8 +358,8 @@ class SecurityLevelInterceptor(
                 ProxyClient.createOperation(proxyInfo.proxyAlias, paramEntries)
             } catch (e: Exception) {
                 if (isKeyNotFound(e)) {
-                    Logger.e("proxy operation key alias=${proxyInfo.proxyAlias} gone on remote (stale after agent/session change) uid=$callingUid alias=$alias; evict cache", e)
-                    removeProxyKey(callingUid, alias)
+                    Logger.e("proxy operation key alias=${proxyInfo.proxyAlias} gone on remote (stale after agent/session change) uid=$callingUid alias=${proxyInfo.localAlias}; evict cache", e)
+                    removeProxyKey(callingUid, proxyInfo.localAlias)
                 }
                 throw e
             }
@@ -279,8 +370,11 @@ class SecurityLevelInterceptor(
 
             val response = CreateOperationResponse()
             response.iOperation = operationBinder
-            response.operationChallenge = 0
-            response.outParams = null
+            response.operationChallenge = null
+            response.parameters = null
+            // upgradedBlob was added after the Android 12 version of this stable
+            // parcelable. Leave its default value untouched to avoid a field lookup
+            // against older framework implementations.
 
             val p = Parcel.obtain()
             p.writeNoException()
@@ -291,6 +385,21 @@ class SecurityLevelInterceptor(
         }
         return Skip
     }
+
+    private fun describeDescriptor(d: KeyDescriptor): String {
+        val blob = d.blob
+        val blobText = if (blob == null) {
+            "null"
+        } else {
+            "${blob.size}:${sha256Hex(blob).take(12)}"
+        }
+        return "descriptor(domain=${d.domain}, nspace=${d.nspace}, alias=${d.alias}, blob=$blobText)"
+    }
+
+    private fun sha256Hex(data: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(data)
+            .joinToString("") { "%02x".format(it) }
 
     @OptIn(ExperimentalStdlibApi::class)
     private fun keyParamToEntry(kp: KeyParameter): ProxyClient.ParamEntry? {

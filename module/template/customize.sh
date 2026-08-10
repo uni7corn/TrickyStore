@@ -68,7 +68,24 @@ extract "$ZIPFILE" 'service.sh'      "$MODPATH"
 extract "$ZIPFILE" 'service.apk'     "$MODPATH"
 extract "$ZIPFILE" 'sepolicy.rule'   "$MODPATH"
 extract "$ZIPFILE" 'daemon'          "$MODPATH"
+chmod 755 "$MODPATH/service.sh" "$MODPATH/post-fs-data.sh"
 chmod 755 "$MODPATH/daemon"
+
+# Fallback for root implementations that do not reliably invoke the module's
+# service.sh. The process/PID checks in service.sh keep this idempotent.
+mkdir -p /data/adb/service.d
+cat > /data/adb/service.d/tricky_store_service.sh <<EOF
+#!/system/bin/sh
+MODDIR=/data/adb/modules/tricky_store
+sleep 10
+[ -f "\$MODDIR/disable" ] && exit 0
+[ -f "\$MODDIR/remove" ] && exit 0
+[ -x "\$MODDIR/daemon" ] || exit 0
+ps -A | grep -i '[T]rickyStore' >/dev/null 2>&1 && exit 0
+cd "\$MODDIR" || exit 0
+sh service.sh >/dev/null 2>&1 &
+EOF
+chmod 755 /data/adb/service.d/tricky_store_service.sh
 
 ui_print "- Extracting WebUI"
 extract "$ZIPFILE" 'webroot/index.html' "$MODPATH"
