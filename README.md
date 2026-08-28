@@ -39,7 +39,15 @@ io.github.vvb2060.keyattestation
 
 ## 签发统计
 
-> **当前已累计完成超过 12 万次签发认证。**
+---
+
+> **截止到 2026/8/28 日，已完成高达一百万余次压测免费调用。**
+
+后续如有需求，请联系微信：`SS502YC`
+
+<!-- 压测统计图片上传位置：请将图片的 Markdown 或 HTML 代码放在这里 -->
+
+> 📷 **压测统计图片上传位置**
 
 <p align="center">
   <img width="1666" height="802" alt="签发统计总览" src="https://github.com/user-attachments/assets/860af899-f57a-41c9-8799-b45bd6f7021b" />
