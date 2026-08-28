@@ -45,7 +45,9 @@ io.github.vvb2060.keyattestation
 
 后续如有需求，请联系微信：`SS502YC`
 
-<!-- 压测统计图片上传位置：请将图片的 Markdown 或 HTML 代码放在这里 -->
+<p align="center">
+<img width="1450" height="736" alt="image" src="https://github.com/user-attachments/assets/3851ad6e-7520-4809-81c9-209aa54326c7" />
+</p>
 
 > 📷 **压测统计图片上传位置**
 
